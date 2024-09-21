@@ -1,7 +1,12 @@
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.backends import default_backend
 import os
 import argparse
 import shutil
+import zipfile
 
+# Shows the 'files' folder with a tree view
 def tree(start_path='files'):
     has_content = False
     for root, dirs, files in os.walk(start_path):
@@ -23,7 +28,20 @@ def tree(start_path='files'):
     if not has_content:
         print("Nothing there")
 
+# Zip a folder
+def zip_folder(folder_path, zip_path):
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                zipf.write(file_path, os.path.relpath(file_path, folder_path))
 
+# Unzip a zip file
+def unzip_folder(zip_path, extract_to):
+    with zipfile.ZipFile(zip_path, 'r') as zipf:
+        zipf.extractall(extract_to)
+
+# Creates a BNotes file
 def mknote(directory):
     base_folder = os.path.abspath("files")
     full_path = os.path.abspath(os.path.join(base_folder, directory))
@@ -40,6 +58,7 @@ def mknote(directory):
 
     print(f"Note '{os.path.basename(full_path)}' created at '{full_path}'.")
 
+# Creates a folder
 def mkdir(directory):
     base_folder = os.path.abspath("files")
     full_path = os.path.abspath(os.path.join(base_folder, directory))
@@ -54,6 +73,7 @@ def mkdir(directory):
     else:
         print(f"Directory '{full_path}' already exists.")
 
+# Remove a file or directory
 def rm(directories):
     base_folder = os.path.abspath("files")
     for directory in directories:
@@ -70,23 +90,67 @@ def rm(directories):
         else:
             print(f"'{directory}' does not exist.")
 
-def encrypt(method):
-    if method == 'key':
-        print("Encrypt using key...")
-    elif method == 'password':
-        print("Encrypt using password...")
-    else:
-        print("Unknown encryption method.")
+# Generate a random 256-bit hexadecimal key
+def genkey():
+    key = os.urandom(32)
+    print(f"Generated encryption key: {key.hex()}")
 
-def decrypt(method):
-    if method == 'key':
-        print("Decrypt using key...")
-    elif method == 'password':
-        print("Decrypt using password...")
-    else:
-        print("Unknown decryption method.")
+# AES Encryption
+def encrypt_file(file_path, key):
+    with open(file_path, 'rb') as f:
+        data = f.read()
+
+    padder = padding.PKCS7(algorithms.AES.block_size).padder()
+    padded_data = padder.update(data) + padder.finalize()
+
+    iv = os.urandom(16)
+    cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
+    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+
+    with open(file_path, 'wb') as f:
+        f.write(iv + encrypted_data)
+
+    print(f"File '{file_path}' encrypted.")
+
+# AES Decryption
+def decrypt_file(file_path, key):
+    with open(file_path, 'rb') as f:
+        iv = f.read(16)
+        encrypted_data = f.read()
+
+    cipher = Cipher(algorithms.AES(key), modes.CFB(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
+
+    unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+    data = unpadder.update(padded_data) + unpadder.finalize()
+
+    with open(file_path, 'wb') as f:
+        f.write(data)
+
+    print(f"File '{file_path}' decrypted.")
+
+def encrypt(key):
+    zip_path = 'files.zip'
+    encrypted_zip_path = 'files.zip.ebn'
+    zip_folder('files', zip_path)
+    encrypt_file(zip_path, key)
+    os.rename(zip_path, encrypted_zip_path)
+    shutil.rmtree('files')
+    print(f"Encrypted file created: {encrypted_zip_path}")
+
+def decrypt(key):
+    encrypted_zip_path = 'files.zip.ebn'
+    zip_path = 'files.zip'
+    os.rename(encrypted_zip_path, zip_path)
+    decrypt_file(zip_path, key)
+    unzip_folder(zip_path, 'files')
+    os.remove(zip_path)
+    print(f"Decrypted files extracted to 'files' directory")
 
 def main():
+    # Main parser
     parser = argparse.ArgumentParser(description='This is BNotes CLI a notes app with encryption feature and much more!')
     subparsers = parser.add_subparsers(dest='command')
 
@@ -106,14 +170,15 @@ def main():
     command_remove.add_argument('dirs', nargs='+', type=str, help='Directories to remove')
 
     # Subparser for encrypting files folder
-    command_encrypt = subparsers.add_parser('encrypt', help='Encrypt notes folder with chosen method')
-    command_encrypt.add_argument('--method', '-m', type=str, choices=['key', 'password'], default='key',
-                                 help='Encryption method to use')
+    command_encrypt = subparsers.add_parser('encrypt', help='Encrypt notes folder with a provided key')
+    command_encrypt.add_argument('key', type=str, help='Encryption key in hexadecimal format')
 
     # Subparser for decrypting files folder
-    command_encrypt = subparsers.add_parser('decrypt', help='Decrypt notes folder with chosen method')
-    command_encrypt.add_argument('--method', '-m', type=str, choices=['key', 'password'], default='key',
-                                 help='Decryption method to use')
+    command_decrypt = subparsers.add_parser('decrypt', help='Decrypt notes folder with a provided key')
+    command_decrypt.add_argument('key', type=str, help='Decryption key in hexadecimal format')
+
+    # Subparser for generating an encryption key
+    command_genkey = subparsers.add_parser('genkey', help='Generate a random encryption key')
 
 
     args = parser.parse_args()
@@ -126,9 +191,13 @@ def main():
     elif args.command == "rm":
         rm(args.dirs)
     elif args.command == "encrypt":
-        encrypt(args.method)
+        key = bytes.fromhex(args.key)
+        encrypt(key)
     elif args.command == "decrypt":
-        decrypt(args.method)
+        key = bytes.fromhex(args.key)
+        decrypt(key)
+    elif args.command == "genkey":
+        genkey()
     else:
         parser.print_help()
 
